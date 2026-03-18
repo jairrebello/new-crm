@@ -357,7 +357,8 @@ export async function POST(request: NextRequest) {
     // we could set `external_id`, try to reconcile by body + time window.
     if (fromMe) {
       const receivedAtMs = new Date(receivedAtTs).getTime()
-      const windowStartIso = new Date(receivedAtMs - 2 * 60 * 1000).toISOString()
+      // Uazapi timestamps may drift slightly vs our local insert time; allow a wider window.
+      const windowStartIso = new Date(receivedAtMs - 10 * 60 * 1000).toISOString()
 
       const { data: pendingLocal } = await admin
         .from('conversation_messages')
@@ -366,7 +367,6 @@ export async function POST(request: NextRequest) {
         .eq('conversation_id', conversationId)
         .eq('whatsapp_instance_id', instance.id)
         .eq('direction', direction)
-        .eq('status', 'stored')
         .is('external_id', null)
         .eq('body', body)
         .gte('created_at', windowStartIso)

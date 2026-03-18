@@ -15,7 +15,7 @@ import type { Pipeline, Deal } from '@/app/actions/deals'
 import { moveDeal } from '@/app/actions/deals'
 import type { ContactOption } from '@/app/actions/contacts'
 import { PipelineColumn } from './pipeline-column'
-import { DealCard } from './deal-card'
+import { DealCardView } from './deal-card'
 import { DealDetailPanel } from './deal-detail-panel'
 import { NewDealDialog } from './new-deal-dialog'
 import { Button } from '@/components/ui/button'
@@ -170,7 +170,7 @@ export function KanbanBoard({ pipelines, tenantSlug, contacts }: Props) {
         <DragOverlay>
           {activeDeal && (
             <div className="rotate-2 opacity-90">
-              <DealCard deal={activeDeal} onOpen={() => {}} />
+              <DealCardView deal={activeDeal} />
             </div>
           )}
         </DragOverlay>

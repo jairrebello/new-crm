@@ -19,7 +19,7 @@ export default async function SettingsPage({
           <nav className="space-y-1">
             <a href="#" className="block px-3 py-2 bg-blue-50 text-blue-700 rounded-md font-medium">Geral</a>
             <a href="#" className="block px-3 py-2 text-gray-600 hover:bg-gray-50 rounded-md font-medium">Membros</a>
-            <a href="#" className="block px-3 py-2 text-gray-600 hover:bg-gray-50 rounded-md font-medium">Pipelines</a>
+            <a href={`/${tenantSlug}/settings/pipelines`} className="block px-3 py-2 text-gray-600 hover:bg-gray-50 rounded-md font-medium">Pipelines</a>
             <a href="#" className="block px-3 py-2 text-gray-600 hover:bg-gray-50 rounded-md font-medium">WhatsApp</a>
             <a href="#" className="block px-3 py-2 text-gray-600 hover:bg-gray-50 rounded-md font-medium">Faturamento</a>
           </nav>

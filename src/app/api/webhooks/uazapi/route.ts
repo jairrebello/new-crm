@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { normalizePhoneWithDefaultBR } from '@/lib/phone'
 
 function describeError(err: unknown) {
   if (err instanceof Error) return err.message
@@ -21,6 +22,21 @@ function describeError(err: unknown) {
     }
   }
   return 'unknown_error'
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const e = typeof err === 'object' && err !== null ? (err as Record<string, unknown>) : null
+  const code = typeof e?.code === 'string' ? (e.code as string) : null
+  if (code === '23505') return true
+
+  const msg = typeof e?.message === 'string' ? (e.message as string) : ''
+  const m = msg.toLowerCase()
+  return (
+    m.includes('duplicate key') ||
+    m.includes('unique constraint') ||
+    m.includes('violates unique') ||
+    m.includes('already exists')
+  )
 }
 
 type IncomingWebhook = {
@@ -47,6 +63,7 @@ type IncomingWebhook = {
     content?: string
     timestamp?: string | number
     messageTimestamp?: string | number
+    chatid?: string
     senderName?: string
     sender_pn?: string
     fromMe?: boolean
@@ -64,11 +81,7 @@ type IncomingWebhook = {
 }
 
 function normalizePhone(raw: string) {
-  const cleaned = raw.trim()
-  const beforeAt = cleaned.includes('@') ? cleaned.split('@')[0] : cleaned
-  // wa_fastid or similar can include ":"; prefer last segment that looks like a phone
-  const afterColon = beforeAt.includes(':') ? beforeAt.split(':').at(-1) ?? beforeAt : beforeAt
-  return afterColon.replace(/[^\d+]/g, '').trim()
+  return normalizePhoneWithDefaultBR(raw)
 }
 
 function coerceText(payload: IncomingWebhook) {
@@ -92,18 +105,31 @@ function coerceInstanceKey(payload: IncomingWebhook) {
 }
 
 function coerceFrom(payload: IncomingWebhook) {
-  const raw =
-    payload.message?.sender_pn ??
-    payload.chat?.phone ??
-    payload.chat?.wa_chatid ??
-    payload.from ??
-    payload.phone ??
-    payload.contact?.phone ??
-    ''
+  const fromMe = Boolean(payload.message?.fromMe)
+
+  // For messages sent from the same WhatsApp account ("fromMe" events),
+  // the "sender" is our own number. The chat/contact is the other party.
+  // Prefer wa_chatid/chat.phone for fromMe events.
+  const raw = fromMe
+    ? payload.message?.chatid ??
+        payload.chat?.wa_chatid ??
+        payload.chat?.phone ??
+        payload.chat?.wa_chatid ??
+        payload.from ??
+        payload.phone ??
+        payload.contact?.phone ??
+        ''
+    : payload.message?.sender_pn ?? payload.chat?.phone ?? payload.chat?.wa_chatid ?? payload.from ?? payload.phone ?? payload.contact?.phone ?? ''
+
   return raw ? normalizePhone(raw) : null
 }
 
 function coerceContactName(payload: IncomingWebhook) {
+  const fromMe = Boolean(payload.message?.fromMe)
+  if (fromMe) {
+    // Prefer the chat name (other party). senderName might be our own name.
+    return payload.chat?.wa_name ?? payload.chat?.name ?? payload.contact?.name ?? null
+  }
   return payload.message?.senderName ?? payload.chat?.wa_name ?? payload.chat?.name ?? payload.contact?.name ?? null
 }
 
@@ -146,6 +172,20 @@ export async function POST(request: NextRequest) {
   const contactName = coerceContactName(payload)
   const receivedAtTs = coerceTimestamp(payload)
   const eventType = payload.EventType ?? payload.event ?? payload.type ?? 'message'
+
+  const fromMe = Boolean(payload.message?.fromMe)
+  const debugFromMeSource =
+    fromMe && payload.message?.chatid
+      ? 'message.chatid'
+      : fromMe && payload.chat?.wa_chatid
+        ? 'chat.wa_chatid'
+        : fromMe && payload.chat?.phone
+          ? 'chat.phone'
+          : fromMe
+            ? 'fallback_from'
+            : payload.message?.sender_pn
+              ? 'message.sender_pn'
+              : 'fallback_from'
 
   // Log early (best-effort; we may not know tenant yet)
   const { data: logRow } = await admin
@@ -225,54 +265,34 @@ export async function POST(request: NextRequest) {
 
   try {
     // 1) Upsert contact by phone (unique per tenant)
-    const { data: existingContact } = await admin
+    const { data: upsertContact, error: upsertContactError } = await admin
       .from('contacts')
-      .select('id, name')
-      .eq('tenant_id', instance.tenant_id)
-      .eq('phone', fromPhone)
-      .maybeSingle()
-
-    let contactId: string | null = existingContact?.id ?? null
-
-    if (!contactId) {
-      const { data: createdContact, error: createContactError } = await admin
-        .from('contacts')
-        .insert({
+      .upsert(
+        {
           tenant_id: instance.tenant_id,
           name: contactName ?? fromPhone,
           phone: fromPhone,
-        })
-        .select('id')
-        .single()
+        },
+        { onConflict: 'tenant_id,phone' }
+      )
+      .select('id')
+      .single()
 
-      if (createContactError) throw new Error(`create_contact_failed: ${createContactError.message}`)
-      contactId = createdContact.id
-    }
+    if (upsertContactError) throw new Error(`upsert_contact_failed: ${upsertContactError.message}`)
+    const contactId = upsertContact.id as string
 
-    // 2) Find or create conversation
+    // 2) Find or create conversation (unique by tenant+instance+contact_id)
     const { data: existingConversation } = await admin
       .from('conversations')
-      .select('id, unread_count')
+      .select('id')
       .eq('tenant_id', instance.tenant_id)
       .eq('whatsapp_instance_id', instance.id)
-      .eq('contact_phone', fromPhone)
+      .eq('contact_id', contactId)
       .maybeSingle()
 
     let conversationId: string
     if (existingConversation?.id) {
       conversationId = existingConversation.id
-      const { error: updConvError } = await admin
-        .from('conversations')
-        .update({
-          contact_id: contactId,
-          contact_phone: fromPhone,
-          contact_name: contactName ?? null,
-          last_message_at: receivedAtTs,
-          unread_count: (existingConversation.unread_count ?? 0) + 1,
-          updated_at: receivedAt,
-        })
-        .eq('id', conversationId)
-      if (updConvError) throw new Error(`update_conversation_failed: ${updConvError.message}`)
     } else {
       const { data: createdConversation, error: createConvError } = await admin
         .from('conversations')
@@ -283,36 +303,97 @@ export async function POST(request: NextRequest) {
           contact_phone: fromPhone,
           contact_name: contactName ?? null,
           last_message_at: receivedAtTs,
-          unread_count: 1,
+          unread_count: 0, // we will update after message insert attempt
           status: 'open',
         })
         .select('id')
         .single()
 
-      if (createConvError) throw new Error(`create_conversation_failed: ${createConvError.message}`)
-      conversationId = createdConversation.id
+      if (createConvError) {
+        // In case of race, re-select the conversation
+        if (!isUniqueViolation(createConvError)) throw new Error(`create_conversation_failed: ${createConvError.message}`)
+
+        const { data: existingAfterRace, error: existingAfterRaceError } = await admin
+          .from('conversations')
+          .select('id')
+          .eq('tenant_id', instance.tenant_id)
+          .eq('whatsapp_instance_id', instance.id)
+          .eq('contact_id', contactId)
+          .maybeSingle()
+
+        if (existingAfterRaceError) throw new Error(existingAfterRaceError.message)
+        if (!existingAfterRace?.id) throw new Error('conversation_race_failed: conversation not found after unique violation')
+        conversationId = existingAfterRace.id as string
+      } else {
+        conversationId = createdConversation.id as string
+      }
     }
 
-    // 3) Insert message (idempotent-ish if external_id unique per instance)
+    // 3) Insert message (idempotent via external_id unique constraint)
+    const direction = fromMe ? 'outbound' : 'inbound'
+    const messageStatus = fromMe ? 'sent' : 'stored'
+    let messageInserted = true
+
     const { error: msgError } = await admin.from('conversation_messages').insert({
       tenant_id: instance.tenant_id,
       conversation_id: conversationId,
       whatsapp_instance_id: instance.id,
-      direction: 'inbound',
+      direction,
       body,
       external_id: externalId,
       received_at: receivedAtTs,
-      status: 'stored',
+      sent_at: fromMe ? receivedAtTs : null,
+      status: messageStatus,
     })
 
     if (msgError) {
-      // If duplicate external_id, just ignore for MVP
-      const msg = typeof msgError === 'object' && msgError && 'message' in msgError ? (msgError as { message?: unknown }).message : undefined
-      const dup = String(msg ?? '').toLowerCase().includes('duplicate')
-      if (!dup) throw msgError
+      if (isUniqueViolation(msgError)) {
+        messageInserted = false
+      } else {
+        throw msgError
+      }
     }
 
+    // 4) Update conversation counters/timestamps only if message was newly inserted
+    const { data: convNow, error: convNowError } = await admin
+      .from('conversations')
+      .select('id, unread_count')
+      .eq('id', conversationId)
+      .maybeSingle()
+
+    if (convNowError) throw new Error(`read_conversation_failed: ${convNowError.message}`)
+    const currentUnread = convNow?.unread_count ?? 0
+    const unreadNext = fromMe ? currentUnread : currentUnread + (messageInserted ? 1 : 0)
+
+    const { error: updConvError } = await admin
+      .from('conversations')
+      .update({
+        contact_id: contactId,
+        contact_phone: fromPhone,
+        contact_name: contactName ?? null,
+        last_message_at: receivedAtTs,
+        unread_count: unreadNext,
+        updated_at: receivedAt,
+      })
+      .eq('id', conversationId)
+
+    if (updConvError) throw new Error(`update_conversation_failed: ${updConvError.message}`)
+
     if (logRow?.id) {
+      const debugPayload: Record<string, unknown> = payload ? (payload as unknown as Record<string, unknown>) : {}
+      debugPayload._debug = {
+        fromMe,
+        fromPhone,
+        debugFromMeSource,
+        messageChatid: payload.message?.chatid ?? null,
+        messageSenderPn: payload.message?.sender_pn ?? null,
+        messageFromMe: payload.message?.fromMe ?? null,
+        chatWaChatid: payload.chat?.wa_chatid ?? null,
+        chatPhone: payload.chat?.phone ?? null,
+        contactId,
+        conversationId,
+      }
+
       await admin
         .from('webhooks_log')
         .update({
@@ -320,6 +401,7 @@ export async function POST(request: NextRequest) {
           whatsapp_instance_id: instance.id,
           processed_at: new Date().toISOString(),
           status: 'processed',
+          payload: debugPayload,
         })
         .eq('id', logRow.id)
     }
@@ -327,6 +409,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true })
   } catch (err) {
     if (logRow?.id) {
+      const debugPayload: Record<string, unknown> = payload ? (payload as unknown as Record<string, unknown>) : {}
+      debugPayload._debug = {
+        fromMe,
+        fromPhone,
+        debugFromMeSource,
+        messageChatid: payload.message?.chatid ?? null,
+        messageSenderPn: payload.message?.sender_pn ?? null,
+        contactId: null,
+        conversationId: null,
+        error: describeError(err),
+      }
+
       await admin
         .from('webhooks_log')
         .update({
@@ -334,6 +428,7 @@ export async function POST(request: NextRequest) {
           whatsapp_instance_id: instance.id,
           status: 'failed',
           error: describeError(err),
+          payload: debugPayload,
         })
         .eq('id', logRow.id)
     }

@@ -3,6 +3,8 @@
 import { useState } from 'react'
 import type { Account, Contact } from '@/app/actions/contacts'
 import { NewContactDialog } from '@/components/contacts/new-contact-dialog'
+import { ImportContactsCsvDialog } from '@/components/contacts/import-contacts-csv-dialog'
+import { StartConversationDialog } from '@/components/contacts/start-conversation-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
@@ -18,6 +20,13 @@ export function ContactsPageClient({
   q: string
 }) {
   const [newOpen, setNewOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
+  const [conversationContact, setConversationContact] = useState<{
+    id: string
+    name: string
+    phone: string | null
+    email: string | null
+  } | null>(null)
 
   return (
     <div className="max-w-5xl">
@@ -30,6 +39,9 @@ export function ContactsPageClient({
         </div>
 
         <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)}>
+            Importar CSV
+          </Button>
           <Button onClick={() => setNewOpen(true)}>Novo contato</Button>
         </div>
       </div>
@@ -49,9 +61,10 @@ export function ContactsPageClient({
 
         <div className="mt-4 overflow-hidden rounded-lg border">
           <div className="grid grid-cols-12 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-600">
-            <div className="col-span-4">Nome</div>
-            <div className="col-span-3">Empresa</div>
+            <div className="col-span-3">Nome</div>
+            <div className="col-span-2">Empresa</div>
             <div className="col-span-3">Contato</div>
+            <div className="col-span-2 text-center">Ações</div>
             <div className="col-span-2 text-right">Criado em</div>
           </div>
 
@@ -60,15 +73,35 @@ export function ContactsPageClient({
           ) : (
             <div className="divide-y">
               {contacts.map((c) => (
-                <div key={c.id} className="grid grid-cols-12 px-3 py-3 text-sm">
-                  <div className="col-span-4">
+                <div key={c.id} className="grid grid-cols-12 items-center px-3 py-3 text-sm">
+                  <div className="col-span-3">
                     <div className="font-medium text-gray-900">{c.name}</div>
                     {c.notes && <div className="text-xs text-muted-foreground line-clamp-1">{c.notes}</div>}
                   </div>
-                  <div className="col-span-3 text-muted-foreground">{c.account?.name ?? '—'}</div>
+                  <div className="col-span-2 text-muted-foreground">{c.account?.name ?? '—'}</div>
                   <div className="col-span-3 text-muted-foreground">
                     <div className="truncate">{c.email ?? '—'}</div>
                     <div className="truncate">{c.phone ?? ''}</div>
+                  </div>
+                  <div className="col-span-2 flex justify-center">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="text-xs"
+                      disabled={!c.phone?.trim()}
+                      title={!c.phone?.trim() ? 'Cadastre um telefone para iniciar conversa' : undefined}
+                      onClick={() =>
+                        setConversationContact({
+                          id: c.id,
+                          name: c.name,
+                          phone: c.phone ?? null,
+                          email: c.email ?? null,
+                        })
+                      }
+                    >
+                      Iniciar conversa
+                    </Button>
                   </div>
                   <div className="col-span-2 text-right text-muted-foreground">
                     {new Date(c.created_at).toLocaleDateString('pt-BR')}
@@ -85,6 +118,17 @@ export function ContactsPageClient({
         onOpenChange={setNewOpen}
         tenantSlug={tenantSlug}
         accounts={accounts}
+      />
+
+      <ImportContactsCsvDialog open={importOpen} onOpenChange={setImportOpen} tenantSlug={tenantSlug} />
+
+      <StartConversationDialog
+        open={Boolean(conversationContact)}
+        onOpenChange={(open) => {
+          if (!open) setConversationContact(null)
+        }}
+        tenantSlug={tenantSlug}
+        contact={conversationContact}
       />
     </div>
   )

@@ -68,7 +68,8 @@ export async function getDealsForKanban(tenantSlug: string): Promise<Pipeline[]>
     .from('pipelines')
     .select('id, name, is_default')
     .eq('tenant_id', tenant.id)
-    .order('created_at')
+    .order('is_default', { ascending: false })
+    .order('created_at', { ascending: true })
 
   if (!pipelines?.length) return []
 

@@ -6,7 +6,7 @@ export default async function InboxPage({
   searchParams,
 }: {
   params: Promise<{ tenantSlug: string }>
-  searchParams?: Promise<{ status?: string; unread?: string; mine?: string }>
+  searchParams?: Promise<{ status?: string; unread?: string; mine?: string; conversation?: string; ignored?: string }>
 }) {
   const { tenantSlug } = await params
 
@@ -15,13 +15,19 @@ export default async function InboxPage({
     sp.status === 'open' || sp.status === 'waiting' || sp.status === 'closed' ? sp.status : undefined
   const unreadOnly = sp.unread === '1'
   const assignedToMe = sp.mine === '1'
+  const ignoredOnly = sp.ignored === '1'
+  const requestedConversationId = typeof sp.conversation === 'string' && sp.conversation.trim() ? sp.conversation.trim() : null
 
   const conversations = await listConversationsFiltered(tenantSlug, {
     status,
     unreadOnly,
     assignedToMe,
+    ignoredOnly,
   })
-  const initialConversationId = conversations[0]?.id ?? null
+  const initialConversationId =
+    (requestedConversationId && conversations.some((c) => c.id === requestedConversationId) ? requestedConversationId : null) ??
+    conversations[0]?.id ??
+    null
   const initialMessages = initialConversationId ? await getConversationMessages(initialConversationId) : []
 
   return (
@@ -36,6 +42,7 @@ export default async function InboxPage({
           status: status ?? 'all',
           unreadOnly,
           assignedToMe,
+          ignoredOnly,
         }}
       />
     </div>

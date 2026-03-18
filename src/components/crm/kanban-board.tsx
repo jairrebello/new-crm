@@ -20,6 +20,7 @@ import { DealDetailPanel } from './deal-detail-panel'
 import { NewDealDialog } from './new-deal-dialog'
 import { Button } from '@/components/ui/button'
 import { PlusIcon } from 'lucide-react'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 type Props = {
   pipelines: Pipeline[]
@@ -34,6 +35,8 @@ export function KanbanBoard({ pipelines, tenantSlug, contacts }: Props) {
   const [panelOpen, setPanelOpen] = useState(false)
   const [newDealOpen, setNewDealOpen] = useState(false)
   const [, startTransition] = useTransition()
+  const initialPipelineId = pipelines.find((p) => p.is_default)?.id ?? pipelines[0]?.id ?? ''
+  const [selectedPipelineId, setSelectedPipelineId] = useState(initialPipelineId)
   const money = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 })
 
   const sensors = useSensors(
@@ -41,7 +44,15 @@ export function KanbanBoard({ pipelines, tenantSlug, contacts }: Props) {
     useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } })
   )
 
-  const currentPipeline = localPipelines[0] // Use default pipeline for now
+  const effectiveSelectedPipelineId =
+    localPipelines.some((p) => p.id === selectedPipelineId)
+      ? selectedPipelineId
+      : localPipelines.find((p) => p.is_default)?.id ?? localPipelines[0]?.id ?? ''
+
+  const currentPipeline =
+    localPipelines.find((p) => p.id === effectiveSelectedPipelineId) ??
+    localPipelines.find((p) => p.is_default) ??
+    localPipelines[0]
 
   function handleDragStart(event: DragStartEvent) {
     const deal = event.active.data.current?.deal as Deal
@@ -115,7 +126,7 @@ export function KanbanBoard({ pipelines, tenantSlug, contacts }: Props) {
       {/* Header */}
       <div className="flex items-center justify-between flex-shrink-0">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Pipeline de vendas</h2>
+          <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">{currentPipeline.name}</h2>
           <p className="text-sm text-slate-500 dark:text-slate-400 mt-0.5">
             {currentPipeline.stages.reduce((n, s) => n + s.deals.length, 0)} negócios abertos ·{' '}
             {money.format(
@@ -125,10 +136,27 @@ export function KanbanBoard({ pipelines, tenantSlug, contacts }: Props) {
             )}
           </p>
         </div>
-        <Button onClick={() => setNewDealOpen(true)} size="sm" className="gap-1.5">
-          <PlusIcon className="h-4 w-4" />
-          Novo negócio
-        </Button>
+        <div className="flex items-center gap-3">
+          {localPipelines.length > 1 && (
+            <Select value={effectiveSelectedPipelineId} onValueChange={(v) => setSelectedPipelineId(v ?? '')}>
+              <SelectTrigger className="w-[220px]">
+                <SelectValue placeholder="Selecione pipeline" />
+              </SelectTrigger>
+              <SelectContent>
+                {localPipelines.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name}
+                    {p.is_default ? ' (padrão)' : ''}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <Button onClick={() => setNewDealOpen(true)} size="sm" className="gap-1.5">
+            <PlusIcon className="h-4 w-4" />
+            Novo negócio
+          </Button>
+        </div>
       </div>
 
       {/* Board */}

@@ -68,6 +68,8 @@ type IncomingWebhook = {
     senderName?: string
     sender_pn?: string
     fromMe?: boolean
+    track_id?: string
+    track_source?: string
   }
   from?: string
   phone?: string
@@ -352,6 +354,7 @@ export async function POST(request: NextRequest) {
     const messageStatus = fromMe ? 'sent' : 'stored'
     let messageInserted = true
     let reconciledLocalMessageId: string | null = null
+    let reconciliationReason: string | null = null
 
     // If we already saved the message locally (outbound) and the webhook arrived before
     // we could set `external_id`, try to reconcile by body + time window.
@@ -360,6 +363,38 @@ export async function POST(request: NextRequest) {
       // Uazapi timestamps may drift slightly vs our local insert time; allow a wider window.
       const windowStartIso = new Date(receivedAtMs - 10 * 60 * 1000).toISOString()
 
+      const trackId = typeof payload.message?.track_id === 'string' && payload.message?.track_id.trim() ? payload.message?.track_id.trim() : null
+
+      // Step 1: if provider echoed our track_id, reconcile by local message id.
+      if (trackId) {
+        const { data: patched, error: patchError } = await admin
+          .from('conversation_messages')
+          .update({
+            status: messageStatus,
+            external_id: externalId,
+            received_at: receivedAtTs,
+            sent_at: receivedAtTs,
+          })
+          .eq('id', trackId)
+          .eq('direction', direction)
+          .eq('conversation_id', conversationId)
+          .eq('whatsapp_instance_id', instance.id)
+          .select('id')
+          .maybeSingle()
+
+        if (patchError) {
+          // If external_id update hits unique constraint (already reconciled), ignore and keep going.
+          if (!isUniqueViolation(patchError)) throw patchError
+        }
+
+        if (patched?.id) {
+          messageInserted = false
+          reconciledLocalMessageId = patched.id as string
+          reconciliationReason = 'track_id'
+        }
+      }
+
+      // Step 2: fallback reconcile by body+time window.
       const { data: pendingLocal } = await admin
         .from('conversation_messages')
         .select('id')
@@ -367,7 +402,6 @@ export async function POST(request: NextRequest) {
         .eq('conversation_id', conversationId)
         .eq('whatsapp_instance_id', instance.id)
         .eq('direction', direction)
-        .is('external_id', null)
         .eq('body', body)
         .gte('created_at', windowStartIso)
         .order('created_at', { ascending: false })
@@ -376,6 +410,7 @@ export async function POST(request: NextRequest) {
       const localId = pendingLocal?.[0]?.id ?? null
       if (localId) {
         messageInserted = false
+        reconciliationReason ??= 'body_window'
         reconciledLocalMessageId = localId
         const patch: Record<string, unknown> = {
           status: messageStatus,
@@ -453,6 +488,9 @@ export async function POST(request: NextRequest) {
         conversationId,
         messageInserted,
         reconciledLocalMessageId,
+        reconciliationReason,
+        messageTrackId: payload.message?.track_id ?? null,
+        messageTrackSource: payload.message?.track_source ?? null,
       }
 
       await admin

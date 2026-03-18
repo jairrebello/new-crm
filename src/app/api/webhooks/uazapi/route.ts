@@ -128,12 +128,17 @@ function coerceFrom(payload: IncomingWebhook) {
 }
 
 function coerceContactName(payload: IncomingWebhook) {
+  const clean = (v: string | null | undefined): string | null => {
+    const t = (v ?? '').trim()
+    return t.length > 0 ? t : null
+  }
+
   const fromMe = Boolean(payload.message?.fromMe)
   if (fromMe) {
     // Prefer the chat name (other party). senderName might be our own name.
-    return payload.chat?.wa_name ?? payload.chat?.name ?? payload.contact?.name ?? null
+    return clean(payload.chat?.wa_name ?? payload.chat?.name ?? payload.contact?.name ?? null)
   }
-  return payload.message?.senderName ?? payload.chat?.wa_name ?? payload.chat?.name ?? payload.contact?.name ?? null
+  return clean(payload.message?.senderName ?? payload.chat?.wa_name ?? payload.chat?.name ?? payload.contact?.name ?? null)
 }
 
 function coerceTimestamp(payload: IncomingWebhook) {
@@ -275,7 +280,8 @@ export async function POST(request: NextRequest) {
       .eq('phone', fromPhone)
       .maybeSingle()
 
-    const resolvedContactName = contactName ?? existingContactByPhone?.name ?? fromPhone
+    const existingName = existingContactByPhone?.name?.trim() ? existingContactByPhone?.name?.trim() : null
+    const resolvedContactName = contactName ?? existingName ?? fromPhone
 
     const { data: upsertContact, error: upsertContactError } = await admin
       .from('contacts')

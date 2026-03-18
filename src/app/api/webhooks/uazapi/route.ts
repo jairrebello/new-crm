@@ -356,9 +356,41 @@ export async function POST(request: NextRequest) {
     let reconciledLocalMessageId: string | null = null
     let reconciliationReason: string | null = null
 
+    // First, attempt idempotency by provider's unique message code (messageid).
+    // This avoids duplicates even when race conditions occur or when DB unique indexes aren't enforced yet.
+    if (externalId) {
+      const { data: existingByExternalId, error: existingByExternalIdError } = await admin
+        .from('conversation_messages')
+        .select('id')
+        .eq('tenant_id', instance.tenant_id)
+        .eq('conversation_id', conversationId)
+        .eq('whatsapp_instance_id', instance.id)
+        .eq('direction', direction)
+        .eq('external_id', externalId)
+        .limit(1)
+
+      if (existingByExternalIdError) throw new Error(existingByExternalIdError.message)
+
+      const existingId = existingByExternalId?.[0]?.id ?? null
+      if (existingId) {
+        messageInserted = false
+        reconciledLocalMessageId = existingId as string
+        reconciliationReason = 'external_id'
+
+        const { error: patchError } = await admin.from('conversation_messages').update({
+          status: messageStatus,
+          received_at: receivedAtTs,
+          sent_at: fromMe ? receivedAtTs : null,
+          external_id: externalId,
+        }).eq('id', existingId)
+
+        if (patchError) throw patchError
+      }
+    }
+
     // If we already saved the message locally (outbound) and the webhook arrived before
     // we could set `external_id`, try to reconcile by body + time window.
-    if (fromMe) {
+    if (fromMe && messageInserted) {
       const receivedAtMs = new Date(receivedAtTs).getTime()
       // Uazapi timestamps may drift slightly vs our local insert time; allow a wider window.
       const windowStartIso = new Date(receivedAtMs - 10 * 60 * 1000).toISOString()

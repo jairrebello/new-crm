@@ -1,6 +1,28 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
+function describeError(err: unknown) {
+  if (err instanceof Error) return err.message
+  if (typeof err === 'string') return err
+  if (err && typeof err === 'object') {
+    const e = err as Record<string, unknown>
+    const msg = typeof e.message === 'string' ? e.message : undefined
+    const code = typeof e.code === 'string' ? e.code : undefined
+    const details = typeof e.details === 'string' ? e.details : undefined
+    const hint = typeof e.hint === 'string' ? e.hint : undefined
+    const parts = [msg, code ? `code=${code}` : null, details ? `details=${details}` : null, hint ? `hint=${hint}` : null]
+      .filter(Boolean)
+      .join(' | ')
+    if (parts) return parts
+    try {
+      return JSON.stringify(err)
+    } catch {
+      return 'unknown_error_object'
+    }
+  }
+  return 'unknown_error'
+}
+
 type IncomingWebhook = {
   instanceKey?: string
   instance_id?: string
@@ -222,7 +244,7 @@ export async function POST(request: NextRequest) {
         .select('id')
         .single()
 
-      if (createContactError) throw createContactError
+      if (createContactError) throw new Error(`create_contact_failed: ${createContactError.message}`)
       contactId = createdContact.id
     }
 
@@ -238,7 +260,7 @@ export async function POST(request: NextRequest) {
     let conversationId: string
     if (existingConversation?.id) {
       conversationId = existingConversation.id
-      await admin
+      const { error: updConvError } = await admin
         .from('conversations')
         .update({
           contact_id: contactId,
@@ -249,6 +271,7 @@ export async function POST(request: NextRequest) {
           updated_at: receivedAt,
         })
         .eq('id', conversationId)
+      if (updConvError) throw new Error(`update_conversation_failed: ${updConvError.message}`)
     } else {
       const { data: createdConversation, error: createConvError } = await admin
         .from('conversations')
@@ -265,7 +288,7 @@ export async function POST(request: NextRequest) {
         .select('id')
         .single()
 
-      if (createConvError) throw createConvError
+      if (createConvError) throw new Error(`create_conversation_failed: ${createConvError.message}`)
       conversationId = createdConversation.id
     }
 
@@ -309,7 +332,7 @@ export async function POST(request: NextRequest) {
           tenant_id: instance.tenant_id,
           whatsapp_instance_id: instance.id,
           status: 'failed',
-          error: err instanceof Error ? err.message : 'unknown_error',
+          error: describeError(err),
         })
         .eq('id', logRow.id)
     }

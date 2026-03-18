@@ -58,6 +58,7 @@ type IncomingWebhook = {
   }
   message?: {
     id?: string
+    messageid?: string
     body?: string
     text?: string
     content?: string
@@ -97,7 +98,9 @@ function coerceText(payload: IncomingWebhook) {
 }
 
 function coerceExternalId(payload: IncomingWebhook) {
-  return payload.message?.id ?? payload.messageId ?? payload.id ?? payload.chat?.id ?? null
+  // Uazapi sometimes provides both `id` (prefixed) and `messageid` (short id).
+  // We prefer `messageid` to keep a stable external_id across local-send and webhook.
+  return payload.message?.messageid ?? payload.message?.id ?? payload.messageId ?? payload.id ?? payload.chat?.id ?? null
 }
 
 function coerceInstanceKey(payload: IncomingWebhook) {
@@ -265,12 +268,21 @@ export async function POST(request: NextRequest) {
 
   try {
     // 1) Upsert contact by phone (unique per tenant)
+    const { data: existingContactByPhone } = await admin
+      .from('contacts')
+      .select('id, name')
+      .eq('tenant_id', instance.tenant_id)
+      .eq('phone', fromPhone)
+      .maybeSingle()
+
+    const resolvedContactName = contactName ?? existingContactByPhone?.name ?? fromPhone
+
     const { data: upsertContact, error: upsertContactError } = await admin
       .from('contacts')
       .upsert(
         {
           tenant_id: instance.tenant_id,
-          name: contactName ?? fromPhone,
+          name: resolvedContactName,
           phone: fromPhone,
         },
         { onConflict: 'tenant_id,phone' }
@@ -301,7 +313,7 @@ export async function POST(request: NextRequest) {
           whatsapp_instance_id: instance.id,
           contact_id: contactId,
           contact_phone: fromPhone,
-          contact_name: contactName ?? null,
+          contact_name: resolvedContactName ?? null,
           last_message_at: receivedAtTs,
           unread_count: 0, // we will update after message insert attempt
           status: 'open',
@@ -333,24 +345,63 @@ export async function POST(request: NextRequest) {
     const direction = fromMe ? 'outbound' : 'inbound'
     const messageStatus = fromMe ? 'sent' : 'stored'
     let messageInserted = true
+    let reconciledLocalMessageId: string | null = null
 
-    const { error: msgError } = await admin.from('conversation_messages').insert({
-      tenant_id: instance.tenant_id,
-      conversation_id: conversationId,
-      whatsapp_instance_id: instance.id,
-      direction,
-      body,
-      external_id: externalId,
-      received_at: receivedAtTs,
-      sent_at: fromMe ? receivedAtTs : null,
-      status: messageStatus,
-    })
+    // If we already saved the message locally (outbound) and the webhook arrived before
+    // we could set `external_id`, try to reconcile by body + time window.
+    if (fromMe) {
+      const receivedAtMs = new Date(receivedAtTs).getTime()
+      const windowStartIso = new Date(receivedAtMs - 2 * 60 * 1000).toISOString()
 
-    if (msgError) {
-      if (isUniqueViolation(msgError)) {
+      const { data: pendingLocal } = await admin
+        .from('conversation_messages')
+        .select('id')
+        .eq('tenant_id', instance.tenant_id)
+        .eq('conversation_id', conversationId)
+        .eq('whatsapp_instance_id', instance.id)
+        .eq('direction', direction)
+        .eq('status', 'stored')
+        .is('external_id', null)
+        .eq('body', body)
+        .gte('created_at', windowStartIso)
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+      const localId = pendingLocal?.[0]?.id ?? null
+      if (localId) {
         messageInserted = false
-      } else {
-        throw msgError
+        reconciledLocalMessageId = localId
+        const patch: Record<string, unknown> = {
+          status: messageStatus,
+          external_id: externalId,
+          received_at: receivedAtTs,
+          sent_at: receivedAtTs,
+        }
+
+        const { error: patchError } = await admin.from('conversation_messages').update(patch).eq('id', localId)
+        if (patchError) throw patchError
+      }
+    }
+
+    if (messageInserted) {
+      const { error: msgError } = await admin.from('conversation_messages').insert({
+        tenant_id: instance.tenant_id,
+        conversation_id: conversationId,
+        whatsapp_instance_id: instance.id,
+        direction,
+        body,
+        external_id: externalId,
+        received_at: receivedAtTs,
+        sent_at: fromMe ? receivedAtTs : null,
+        status: messageStatus,
+      })
+
+      if (msgError) {
+        if (isUniqueViolation(msgError)) {
+          messageInserted = false
+        } else {
+          throw msgError
+        }
       }
     }
 
@@ -370,7 +421,7 @@ export async function POST(request: NextRequest) {
       .update({
         contact_id: contactId,
         contact_phone: fromPhone,
-        contact_name: contactName ?? null,
+        contact_name: resolvedContactName ?? null,
         last_message_at: receivedAtTs,
         unread_count: unreadNext,
         updated_at: receivedAt,
@@ -385,6 +436,8 @@ export async function POST(request: NextRequest) {
         fromMe,
         fromPhone,
         debugFromMeSource,
+        contactName,
+        resolvedContactName,
         messageChatid: payload.message?.chatid ?? null,
         messageSenderPn: payload.message?.sender_pn ?? null,
         messageFromMe: payload.message?.fromMe ?? null,
@@ -392,6 +445,8 @@ export async function POST(request: NextRequest) {
         chatPhone: payload.chat?.phone ?? null,
         contactId,
         conversationId,
+        messageInserted,
+        reconciledLocalMessageId,
       }
 
       await admin

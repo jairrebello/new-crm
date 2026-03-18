@@ -531,6 +531,9 @@ export async function sendConversationMessage(input: {
           const data = parsed && typeof parsed.data === 'object' && parsed.data !== null ? (parsed.data as Record<string, unknown>) : null
 
           const candidate =
+            // Prefer short messageid for a stable external_id (matches webhook `message.messageid`)
+            (typeof parsed?.messageid === 'string' && parsed.messageid) ||
+            (typeof message?.messageid === 'string' && message.messageid) ||
             (typeof parsed?.id === 'string' && parsed.id) ||
             (typeof parsed?.messageId === 'string' && parsed.messageId) ||
             (typeof message?.id === 'string' && message.id) ||

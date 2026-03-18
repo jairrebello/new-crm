@@ -5,10 +5,33 @@ type IncomingWebhook = {
   instanceKey?: string
   instance_id?: string
   instanceId?: string
+  token?: string
+  EventType?: string
+  instanceName?: string
+  BaseUrl?: string
+  chat?: {
+    id?: string
+    phone?: string
+    name?: string
+    wa_name?: string
+    wa_chatid?: string
+    wa_lastMsgTimestamp?: string | number
+    wa_lastMessageTextVote?: string
+  }
+  message?: {
+    id?: string
+    body?: string
+    text?: string
+    content?: string
+    timestamp?: string | number
+    messageTimestamp?: string | number
+    senderName?: string
+    sender_pn?: string
+    fromMe?: boolean
+  }
   from?: string
   phone?: string
   contact?: { name?: string; phone?: string }
-  message?: { id?: string; body?: string; text?: string; timestamp?: string | number }
   body?: string
   text?: string
   messageId?: string
@@ -19,13 +42,19 @@ type IncomingWebhook = {
 }
 
 function normalizePhone(raw: string) {
-  return raw.replace(/[^\d+]/g, '').trim()
+  const cleaned = raw.trim()
+  const beforeAt = cleaned.includes('@') ? cleaned.split('@')[0] : cleaned
+  // wa_fastid or similar can include ":"; prefer last segment that looks like a phone
+  const afterColon = beforeAt.includes(':') ? beforeAt.split(':').at(-1) ?? beforeAt : beforeAt
+  return afterColon.replace(/[^\d+]/g, '').trim()
 }
 
 function coerceText(payload: IncomingWebhook) {
   return (
     payload.message?.body ??
     payload.message?.text ??
+    payload.message?.content ??
+    payload.chat?.wa_lastMessageTextVote ??
     payload.body ??
     payload.text ??
     ''
@@ -33,7 +62,7 @@ function coerceText(payload: IncomingWebhook) {
 }
 
 function coerceExternalId(payload: IncomingWebhook) {
-  return payload.message?.id ?? payload.messageId ?? payload.id ?? null
+  return payload.message?.id ?? payload.messageId ?? payload.id ?? payload.chat?.id ?? null
 }
 
 function coerceInstanceKey(payload: IncomingWebhook) {
@@ -41,20 +70,36 @@ function coerceInstanceKey(payload: IncomingWebhook) {
 }
 
 function coerceFrom(payload: IncomingWebhook) {
-  const raw = payload.from ?? payload.phone ?? payload.contact?.phone ?? ''
+  const raw =
+    payload.message?.sender_pn ??
+    payload.chat?.phone ??
+    payload.chat?.wa_chatid ??
+    payload.from ??
+    payload.phone ??
+    payload.contact?.phone ??
+    ''
   return raw ? normalizePhone(raw) : null
 }
 
 function coerceContactName(payload: IncomingWebhook) {
-  return payload.contact?.name ?? null
+  return payload.message?.senderName ?? payload.chat?.wa_name ?? payload.chat?.name ?? payload.contact?.name ?? null
 }
 
 function coerceTimestamp(payload: IncomingWebhook) {
-  const t = payload.message?.timestamp ?? payload.timestamp
+  const t =
+    payload.message?.messageTimestamp ??
+    payload.message?.timestamp ??
+    payload.chat?.wa_lastMsgTimestamp ??
+    payload.timestamp
   if (!t) return new Date().toISOString()
-  if (typeof t === 'number') return new Date(t * 1000).toISOString()
+  if (typeof t === 'number') {
+    // Uazapi uses ms; older integrations may use seconds
+    return new Date(t > 2_000_000_000_000 ? t : t * 1000).toISOString()
+  }
   const n = Number(t)
-  if (!Number.isNaN(n)) return new Date(n * 1000).toISOString()
+  if (!Number.isNaN(n)) {
+    return new Date(n > 2_000_000_000_000 ? n : n * 1000).toISOString()
+  }
   const d = new Date(t)
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString()
 }
@@ -77,7 +122,7 @@ export async function POST(request: NextRequest) {
   const externalId = coerceExternalId(payload)
   const contactName = coerceContactName(payload)
   const receivedAtTs = coerceTimestamp(payload)
-  const eventType = payload.event ?? payload.type ?? 'message'
+  const eventType = payload.EventType ?? payload.event ?? payload.type ?? 'message'
 
   // Log early (best-effort; we may not know tenant yet)
   const { data: logRow } = await admin
@@ -95,7 +140,11 @@ export async function POST(request: NextRequest) {
 
   // Simplified auth: only instance token is required.
   // Token can come via header or query param. (Legacy: instanceKey from payload is kept only for logging context.)
-  const instanceToken = request.headers.get('x-instance-token') ?? request.nextUrl.searchParams.get('token')
+  const instanceToken =
+    request.headers.get('x-instance-token') ??
+    request.nextUrl.searchParams.get('token') ??
+    payload.token ??
+    null
 
   if (!instanceToken) {
     if (logRow?.id) {

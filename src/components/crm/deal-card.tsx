@@ -24,8 +24,14 @@ export function DealCard({ deal, onOpen }: Props) {
   })
 
   const style = transform
-    ? { transform: CSS.Translate.toString(transform) }
-    : undefined
+    ? {
+        // dnd-kit aplica translate via `transform`; para não conflitar com utilitários Tailwind
+        // que também alteram `transform`, combinamos scale aqui.
+        transform: `${CSS.Translate.toString(transform)}${isDragging ? ' scale(0.95)' : ''}`,
+      }
+    : isDragging
+      ? { transform: 'scale(0.95)' }
+      : undefined
 
   const priority = priorityConfig[deal.priority as keyof typeof priorityConfig] ?? priorityConfig.medium
   const contactName = (deal.contact as { name?: string } | null)?.name
@@ -49,10 +55,10 @@ export function DealCard({ deal, onOpen }: Props) {
       {...attributes}
       onClick={() => onOpen(deal)}
       className={cn(
-        'bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700',
+        'bg-white dark:bg-slate-800 p-3 rounded-lg shadow-sm border border-slate-200 dark:border-slate-700 w-full box-border',
         'cursor-grab active:cursor-grabbing select-none',
         'hover:border-blue-300 dark:hover:border-blue-600 hover:shadow-md transition-all',
-        isDragging && 'opacity-50 scale-95 shadow-lg border-blue-400'
+        isDragging && 'opacity-50 shadow-lg border-blue-400'
       )}
     >
       <h4 className="font-medium text-sm text-slate-900 dark:text-slate-100 line-clamp-2 leading-snug">

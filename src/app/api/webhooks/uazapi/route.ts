@@ -115,12 +115,13 @@ function coerceTimestamp(payload: IncomingWebhook) {
     payload.timestamp
   if (!t) return new Date().toISOString()
   if (typeof t === 'number') {
-    // Uazapi uses ms; older integrations may use seconds
-    return new Date(t > 2_000_000_000_000 ? t : t * 1000).toISOString()
+    // Uazapi uses ms (e.g. 1773842581000). Seconds would be ~1.7e9.
+    // Treat values >= 1e11 as milliseconds, else seconds.
+    return new Date(t >= 100_000_000_000 ? t : t * 1000).toISOString()
   }
   const n = Number(t)
   if (!Number.isNaN(n)) {
-    return new Date(n > 2_000_000_000_000 ? n : n * 1000).toISOString()
+    return new Date(n >= 100_000_000_000 ? n : n * 1000).toISOString()
   }
   const d = new Date(t)
   return Number.isNaN(d.getTime()) ? new Date().toISOString() : d.toISOString()

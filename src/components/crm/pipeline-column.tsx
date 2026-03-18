@@ -15,7 +15,7 @@ export function PipelineColumn({ stage, onDealOpen }: Props) {
   const money = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL', maximumFractionDigits: 0 })
 
   return (
-    <div className="min-w-[280px] max-w-[280px] flex flex-col rounded-xl bg-slate-100/80 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/50">
+    <div className="min-w-[280px] max-w-[280px] h-full flex flex-col rounded-xl bg-slate-100/80 dark:bg-slate-800/60 border border-slate-200/70 dark:border-slate-700/50">
       {/* Column Header */}
       <div className="flex items-center justify-between px-3 py-3">
         <div className="flex items-center gap-2">
@@ -45,7 +45,9 @@ export function PipelineColumn({ stage, onDealOpen }: Props) {
       <div
         ref={setNodeRef}
         className={cn(
-          'flex-1 flex flex-col gap-2 p-2 min-h-[120px] rounded-b-xl transition-colors',
+          // min-h-0 é importante para permitir que flex-1 respeite a altura do container
+          // e não “vaze” conteúdo para fora do estágio.
+          'flex-1 flex flex-col gap-2 p-2 min-h-[120px] min-h-0 overflow-y-auto rounded-b-xl transition-colors',
           isOver && 'bg-blue-50 dark:bg-blue-900/20'
         )}
       >

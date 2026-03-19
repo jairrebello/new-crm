@@ -1,10 +1,11 @@
 'use client'
 
 import { useState } from 'react'
-import type { Account, Contact } from '@/app/actions/contacts'
+import type { Account, Contact, Tag } from '@/app/actions/contacts'
 import { NewContactDialog } from '@/components/contacts/new-contact-dialog'
 import { ImportContactsCsvDialog } from '@/components/contacts/import-contacts-csv-dialog'
 import { StartConversationDialog } from '@/components/contacts/start-conversation-dialog'
+import { EditContactDialog } from '@/components/contacts/edit-contact-dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
@@ -26,6 +27,12 @@ export function ContactsPageClient({
     name: string
     phone: string | null
     email: string | null
+  } | null>(null)
+
+  const [editContact, setEditContact] = useState<{
+    id: string
+    name: string
+    tags?: Tag[]
   } | null>(null)
 
   return (
@@ -77,6 +84,19 @@ export function ContactsPageClient({
                   <div className="col-span-3">
                     <div className="font-medium text-gray-900">{c.name}</div>
                     {c.notes && <div className="text-xs text-muted-foreground line-clamp-1">{c.notes}</div>}
+                    {c.tags && c.tags.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {c.tags.map((t) => (
+                          <span
+                            key={t.id}
+                            className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium text-gray-800"
+                            style={{ backgroundColor: t.color ?? '#e2e8f0' }}
+                          >
+                            {t.name}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="col-span-2 text-muted-foreground">{c.account?.name ?? '—'}</div>
                   <div className="col-span-3 text-muted-foreground">
@@ -84,24 +104,35 @@ export function ContactsPageClient({
                     <div className="truncate">{c.phone ?? ''}</div>
                   </div>
                   <div className="col-span-2 flex justify-center">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="text-xs"
-                      disabled={!c.phone?.trim()}
-                      title={!c.phone?.trim() ? 'Cadastre um telefone para iniciar conversa' : undefined}
-                      onClick={() =>
-                        setConversationContact({
-                          id: c.id,
-                          name: c.name,
-                          phone: c.phone ?? null,
-                          email: c.email ?? null,
-                        })
-                      }
-                    >
-                      Iniciar conversa
-                    </Button>
+                    <div className="flex flex-col items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="text-xs w-full"
+                        disabled={!c.phone?.trim()}
+                        title={!c.phone?.trim() ? 'Cadastre um telefone para iniciar conversa' : undefined}
+                        onClick={() =>
+                          setConversationContact({
+                            id: c.id,
+                            name: c.name,
+                            phone: c.phone ?? null,
+                            email: c.email ?? null,
+                          })
+                        }
+                      >
+                        Iniciar
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="text-xs w-full"
+                        onClick={() => setEditContact({ id: c.id, name: c.name, tags: c.tags })}
+                      >
+                        Editar
+                      </Button>
+                    </div>
                   </div>
                   <div className="col-span-2 text-right text-muted-foreground">
                     {new Date(c.created_at).toLocaleDateString('pt-BR')}
@@ -130,6 +161,17 @@ export function ContactsPageClient({
         tenantSlug={tenantSlug}
         contact={conversationContact}
       />
+
+      {editContact && (
+        <EditContactDialog
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) setEditContact(null)
+          }}
+          tenantSlug={tenantSlug}
+          contact={editContact}
+        />
+      )}
     </div>
   )
 }

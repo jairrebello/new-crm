@@ -1,3 +1,4 @@
+import { getContactTagsByContactIds } from '@/app/actions/contacts'
 import { listConversationsFiltered, getConversationMessages } from '@/app/actions/inbox'
 import { InboxPageClient } from '@/components/inbox/inbox-page'
 
@@ -24,6 +25,10 @@ export default async function InboxPage({
     assignedToMe,
     ignoredOnly,
   })
+  const contactIds = Array.from(
+    new Set(conversations.map((c) => c.contact_id).filter((id): id is string => Boolean(id)))
+  )
+  const contactTagMap = await getContactTagsByContactIds(tenantSlug, contactIds)
   const initialConversationId =
     (requestedConversationId && conversations.some((c) => c.id === requestedConversationId) ? requestedConversationId : null) ??
     conversations[0]?.id ??
@@ -31,21 +36,19 @@ export default async function InboxPage({
   const initialMessages = initialConversationId ? await getConversationMessages(initialConversationId) : []
 
   return (
-    <div>
-      <h2 className="text-2xl font-bold mb-4">Caixa de entrada</h2>
-      <InboxPageClient
-        tenantSlug={tenantSlug}
-        conversations={conversations}
-        initialConversationId={initialConversationId}
-        initialMessages={initialMessages}
-        filters={{
-          status: status ?? 'all',
-          unreadOnly,
-          assignedToMe,
-          ignoredOnly,
-        }}
-      />
-    </div>
+    <InboxPageClient
+      tenantSlug={tenantSlug}
+      conversations={conversations}
+      contactTagMap={contactTagMap}
+      initialConversationId={initialConversationId}
+      initialMessages={initialMessages}
+      filters={{
+        status: status ?? 'all',
+        unreadOnly,
+        assignedToMe,
+        ignoredOnly,
+      }}
+    />
   )
 }
 

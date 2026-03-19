@@ -18,6 +18,13 @@ export type Contact = {
   account_id: string | null
   created_at: string
   account?: Account | null
+  tags?: Tag[]
+}
+
+export type Tag = {
+  id: string
+  name: string
+  color?: string | null
 }
 
 export type ContactOption = {
@@ -59,7 +66,7 @@ export async function listAccounts(tenantSlug: string): Promise<Account[]> {
   return (data ?? []) as Account[]
 }
 
-export async function listContacts(tenantSlug: string, opts?: { q?: string }): Promise<Contact[]> {
+export async function listContacts(tenantSlug: string, opts?: { q?: string; includeTags?: boolean }): Promise<Contact[]> {
   const supabase = await createClient()
   const tenantId = await getTenantIdBySlugOrThrow(tenantSlug)
 
@@ -80,13 +87,100 @@ export async function listContacts(tenantSlug: string, opts?: { q?: string }): P
   const { data, error } = await query
   if (error) throw new Error(error.message)
 
-  return (data ?? []).map((row: unknown) => {
+  const contacts = (data ?? []).map((row: unknown) => {
     const r = row as Contact & { account?: unknown }
     return {
       ...r,
       account: firstOrNull<Account>(r.account),
     } satisfies Contact
   })
+
+  // Default: do not load tags to keep inbox search fast.
+  if (!opts?.includeTags) return contacts
+
+  if (contacts.length === 0) return contacts
+
+  const contactIds = contacts.map((c) => c.id)
+
+  const { data: links, error: linksError } = await supabase
+    .from('contact_tags')
+    .select('contact_id, tag_id')
+    .eq('tenant_id', tenantId)
+    .in('contact_id', contactIds)
+
+  if (linksError) throw new Error(linksError.message)
+
+  const tagIds = Array.from(new Set((links ?? []).map((l) => l.tag_id).filter((v): v is string => Boolean(v))))
+  if (tagIds.length === 0) return contacts
+
+  const { data: tagsData, error: tagsError } = await supabase
+    .from('tags')
+    .select('id, name, color')
+    .eq('tenant_id', tenantId)
+    .in('id', tagIds)
+
+  if (tagsError) throw new Error(tagsError.message)
+
+  const tagsById = new Map<string, Tag>((tagsData ?? []).map((t) => [t.id, { id: t.id, name: t.name, color: t.color }]))
+
+  const contactTagsByContactId = new Map<string, Tag[]>()
+  for (const link of links ?? []) {
+    const tag = tagsById.get(link.tag_id)
+    if (!tag) continue
+    const prev = contactTagsByContactId.get(link.contact_id) ?? []
+    prev.push(tag)
+    contactTagsByContactId.set(link.contact_id, prev)
+  }
+
+  return contacts.map((c) => ({
+    ...c,
+    tags: contactTagsByContactId.get(c.id) ?? [],
+  }))
+}
+
+/** Mapa contact_id → tags (para lista do inbox, etc.) */
+export async function getContactTagsByContactIds(
+  tenantSlug: string,
+  contactIds: string[]
+): Promise<Record<string, Tag[]>> {
+  const empty: Record<string, Tag[]> = {}
+  const unique = Array.from(new Set(contactIds.filter(Boolean)))
+  for (const id of unique) empty[id] = []
+  if (unique.length === 0) return empty
+
+  const supabase = await createClient()
+  const tenantId = await getTenantIdBySlugOrThrow(tenantSlug)
+
+  const { data: links, error: linksError } = await supabase
+    .from('contact_tags')
+    .select('contact_id, tag_id')
+    .eq('tenant_id', tenantId)
+    .in('contact_id', unique)
+
+  if (linksError) throw new Error(linksError.message)
+
+  const tagIds = Array.from(new Set((links ?? []).map((l) => l.tag_id).filter((v): v is string => Boolean(v))))
+  if (tagIds.length === 0) return empty
+
+  const { data: tagsData, error: tagsError } = await supabase
+    .from('tags')
+    .select('id, name, color')
+    .eq('tenant_id', tenantId)
+    .in('id', tagIds)
+
+  if (tagsError) throw new Error(tagsError.message)
+
+  const tagsById = new Map<string, Tag>((tagsData ?? []).map((t) => [t.id, { id: t.id, name: t.name, color: t.color }]))
+
+  for (const link of links ?? []) {
+    const tag = tagsById.get(link.tag_id)
+    if (!tag) continue
+    const prev = empty[link.contact_id] ?? []
+    prev.push(tag)
+    empty[link.contact_id] = prev
+  }
+
+  return empty
 }
 
 export async function listContactOptions(tenantSlug: string): Promise<ContactOption[]> {
@@ -126,6 +220,7 @@ export async function createContact(input: {
   phone?: string | null
   notes?: string | null
   accountId?: string | null
+  tags?: string[]
 }): Promise<Contact> {
   const supabase = await createClient()
   const tenantId = await getTenantIdBySlugOrThrow(input.tenantSlug)
@@ -148,12 +243,148 @@ export async function createContact(input: {
     .single()
 
   if (error) throw new Error(error.message)
-  revalidatePath(`/${input.tenantSlug}/contacts`)
   const r = data as unknown as Omit<Contact, 'account'> & { account?: unknown }
+
+  const normalizedTags = (input.tags ?? [])
+    .map((t) => t.trim())
+    .filter(Boolean)
+
+  const uniqueByLower = new Map<string, string>()
+  for (const name of normalizedTags) {
+    const lower = name.toLowerCase()
+    if (!uniqueByLower.has(lower)) uniqueByLower.set(lower, name)
+  }
+
+  let tags: Tag[] = []
+
+  if (uniqueByLower.size > 0) {
+    const lowerList = Array.from(uniqueByLower.keys())
+
+    const { data: existingTags, error: existingTagsError } = await supabase
+      .from('tags')
+      .select('id, name, name_lower, color')
+      .eq('tenant_id', tenantId)
+      .in('name_lower', lowerList)
+
+    if (existingTagsError) throw new Error(existingTagsError.message)
+
+    const existingLower = new Set((existingTags ?? []).map((t) => t.name_lower).filter(Boolean))
+    const missingPayload = lowerList
+      .filter((lower) => !existingLower.has(lower))
+      .map((lower) => ({
+        tenant_id: tenantId,
+        name: uniqueByLower.get(lower) ?? lower,
+        name_lower: lower,
+      }))
+
+    if (missingPayload.length > 0) {
+      const { error: insertTagsError } = await supabase.from('tags').insert(missingPayload)
+      if (insertTagsError) throw new Error(insertTagsError.message)
+    }
+
+    const { data: ensuredTags, error: ensuredTagsError } = await supabase
+      .from('tags')
+      .select('id, name, name_lower, color')
+      .eq('tenant_id', tenantId)
+      .in('name_lower', lowerList)
+
+    if (ensuredTagsError) throw new Error(ensuredTagsError.message)
+
+    tags = (ensuredTags ?? []).map((t) => ({ id: t.id, name: t.name, color: t.color }))
+
+    const joinRows = (ensuredTags ?? []).map((t) => ({
+      tenant_id: tenantId,
+      contact_id: r.id,
+      tag_id: t.id,
+    }))
+
+    const { error: insertLinksError } = await supabase.from('contact_tags').insert(joinRows)
+    if (insertLinksError) throw new Error(insertLinksError.message)
+  }
+
+  revalidatePath(`/${input.tenantSlug}/contacts`)
   return {
     ...r,
     account: firstOrNull<Account>(r.account),
+    tags,
   } satisfies Contact
+}
+
+export async function updateContactTags(input: {
+  tenantSlug: string
+  contactId: string
+  tags: string[]
+}): Promise<void> {
+  const supabase = await createClient()
+  const tenantId = await getTenantIdBySlugOrThrow(input.tenantSlug)
+
+  const normalizedTags = input.tags
+    .map((t) => t.trim())
+    .filter(Boolean)
+
+  const uniqueByLower = new Map<string, string>()
+  for (const name of normalizedTags) {
+    const lower = name.toLowerCase()
+    if (!uniqueByLower.has(lower)) uniqueByLower.set(lower, name)
+  }
+
+  // Clear existing links first (then re-insert the desired set).
+  const { error: deleteLinksError } = await supabase
+    .from('contact_tags')
+    .delete()
+    .eq('tenant_id', tenantId)
+    .eq('contact_id', input.contactId)
+
+  if (deleteLinksError) throw new Error(deleteLinksError.message)
+
+  if (uniqueByLower.size === 0) {
+    revalidatePath(`/${input.tenantSlug}/contacts`)
+    return
+  }
+
+  const lowerList = Array.from(uniqueByLower.keys())
+
+  const { data: existingTags, error: existingTagsError } = await supabase
+    .from('tags')
+    .select('id, name, name_lower, color')
+    .eq('tenant_id', tenantId)
+    .in('name_lower', lowerList)
+
+  if (existingTagsError) throw new Error(existingTagsError.message)
+
+  const existingLower = new Set((existingTags ?? []).map((t) => t.name_lower).filter(Boolean))
+
+  const missingPayload = lowerList
+    .filter((lower) => !existingLower.has(lower))
+    .map((lower) => ({
+      tenant_id: tenantId,
+      name: uniqueByLower.get(lower) ?? lower,
+      name_lower: lower,
+    }))
+
+  if (missingPayload.length > 0) {
+    const { error: insertTagsError } = await supabase.from('tags').insert(missingPayload)
+    if (insertTagsError) throw new Error(insertTagsError.message)
+  }
+
+  const { data: ensuredTags, error: ensuredTagsError } = await supabase
+    .from('tags')
+    .select('id, name, name_lower, color')
+    .eq('tenant_id', tenantId)
+    .in('name_lower', lowerList)
+
+  if (ensuredTagsError) throw new Error(ensuredTagsError.message)
+
+  const joinRows = (ensuredTags ?? []).map((t) => ({
+    tenant_id: tenantId,
+    contact_id: input.contactId,
+    tag_id: t.id,
+  }))
+
+  const { error: insertLinksError } = await supabase.from('contact_tags').insert(joinRows)
+  if (insertLinksError) throw new Error(insertLinksError.message)
+
+  revalidatePath(`/${input.tenantSlug}/contacts`)
 }
 
 export type ImportContactsRow = {

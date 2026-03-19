@@ -25,6 +25,7 @@ export function NewContactDialog({ open, onOpenChange, tenantSlug, accounts, onC
   const [email, setEmail] = useState('')
   const [phone, setPhone] = useState('')
   const [notes, setNotes] = useState('')
+  const [tagsText, setTagsText] = useState('')
   const [accountId, setAccountId] = useState<string>('none')
 
   const accountOptions = useMemo(() => accounts ?? [], [accounts])
@@ -34,6 +35,7 @@ export function NewContactDialog({ open, onOpenChange, tenantSlug, accounts, onC
     setEmail('')
     setPhone('')
     setNotes('')
+    setTagsText('')
     setAccountId('none')
     setError(null)
   }, [])
@@ -49,6 +51,11 @@ export function NewContactDialog({ open, onOpenChange, tenantSlug, accounts, onC
 
     startTransition(async () => {
       try {
+        const tags = tagsText
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean)
+
         const created = await createContact({
           tenantSlug,
           name: name.trim(),
@@ -56,6 +63,7 @@ export function NewContactDialog({ open, onOpenChange, tenantSlug, accounts, onC
           phone: phone.trim() ? phone.trim() : null,
           notes: notes.trim() ? notes.trim() : null,
           accountId: accountId === 'none' ? null : accountId,
+          tags: tags.length > 0 ? tags : undefined,
         })
         onCreated?.(created)
         onOpenChange(false)
@@ -117,6 +125,11 @@ export function NewContactDialog({ open, onOpenChange, tenantSlug, accounts, onC
           <div className="grid gap-1.5">
             <label className="text-sm font-medium">Observações</label>
             <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Contexto, preferências, etc." />
+          </div>
+
+          <div className="grid gap-1.5">
+            <label className="text-sm font-medium">Tags (separadas por vírgula)</label>
+            <Input value={tagsText} onChange={(e) => setTagsText(e.target.value)} placeholder="Ex: VIP, Newsletter" />
           </div>
 
           {error && (

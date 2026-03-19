@@ -12,7 +12,10 @@ export default async function ContactsPage({
   const resolvedSearchParams = (await searchParams) ?? {}
   const q = resolvedSearchParams.q?.trim() ?? ''
 
-  const [accounts, contacts] = await Promise.all([listAccounts(tenantSlug), listContacts(tenantSlug, { q })])
+  const [accounts, contacts] = await Promise.all([
+    listAccounts(tenantSlug),
+    listContacts(tenantSlug, { q, includeTags: true }),
+  ])
 
   return (
     <ContactsPageClient tenantSlug={tenantSlug} accounts={accounts} contacts={contacts} q={q} />

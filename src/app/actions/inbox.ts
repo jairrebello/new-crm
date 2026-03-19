@@ -32,7 +32,8 @@ export type ConversationMessage = {
 
 export type ConversationContext = {
   conversation: Conversation
-  contact: { id: string; name: string; phone: string | null; email: string | null } | null
+  contact: { id: string; name: string; phone: string | null; email: string | null; notes: string | null } | null
+  contactTags: Array<{ id: string; name: string; color: string | null }>
   deals: Array<{
     id: string
     title: string
@@ -347,11 +348,29 @@ export async function getConversationContext(tenantSlug: string, conversationId:
   const { data: contact } = contactId
     ? await supabase
         .from('contacts')
-        .select('id, name, phone, email')
+        .select('id, name, phone, email, notes')
         .eq('tenant_id', tenantId)
         .eq('id', contactId)
         .single()
-    : { data: null as { id: string; name: string; phone: string | null; email: string | null } | null }
+    : { data: null as { id: string; name: string; phone: string | null; email: string | null; notes: string | null } | null }
+
+  let contactTags: ConversationContext['contactTags'] = []
+  if (contactId) {
+    const { data: tagLinks } = await supabase
+      .from('contact_tags')
+      .select('tag_id')
+      .eq('tenant_id', tenantId)
+      .eq('contact_id', contactId)
+    const tids = Array.from(new Set((tagLinks ?? []).map((r) => r.tag_id).filter(Boolean)))
+    if (tids.length > 0) {
+      const { data: tagRows } = await supabase
+        .from('tags')
+        .select('id, name, color')
+        .eq('tenant_id', tenantId)
+        .in('id', tids)
+      contactTags = (tagRows ?? []).map((t) => ({ id: t.id, name: t.name, color: t.color }))
+    }
+  }
 
   const { data: deals } = contactId
     ? await supabase
@@ -375,6 +394,7 @@ export async function getConversationContext(tenantSlug: string, conversationId:
   return {
     conversation: conv as Conversation,
     contact: contact ?? null,
+    contactTags,
     deals: (deals ?? []) as ConversationContext['deals'],
   }
 }
